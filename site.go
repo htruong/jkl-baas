@@ -23,7 +23,7 @@ var (
 type Site struct {
 	Src  string // Directory where Jekyll will look to transform files
 	Dest string // Directory where Jekyll will write files to
-	Conf Config // Configuration date from the _config.yml file
+	Conf Config // Configuration date from the _config.toml file
 
 	posts []Page             // Posts thet need to be generated
 	pages []Page             // Pages that need to be generated
@@ -33,8 +33,8 @@ type Site struct {
 
 func NewSite(src, dest string) (*Site, error) {
 
-	// Parse the _config.yml file
-	path := filepath.Join(src, "_config.yml")
+	// Parse the _config.toml file
+	path := filepath.Join(src, "_config.toml")
 	conf, err := ParseConfig(path)
 	log.Printf(MsgUsingConfig, path)
 	if err != nil {
@@ -100,8 +100,7 @@ func (s *Site) Generate() error {
 
 // Deploys a site to S3.
 func (s *Site) Deploy(user, pass, url string) error {
-
-	auth := aws.Auth{user, pass}
+	auth := aws.Auth{AccessKey: user, SecretKey: pass}
 	b := s3.New(auth, aws.USEast).Bucket(url)
 
 	// walks _site directory and uploads file to S3
@@ -132,6 +131,16 @@ func (s *Site) Deploy(user, pass, url string) error {
 	return filepath.Walk(s.Dest, walker)
 }
 
+func Filter(s []Page, fn func(Page) bool) []Page {
+	var p []Page // == nil
+	for _, i := range s {
+		if fn(i) {
+			p = append(p, i)
+		}
+	}
+	return p
+}
+
 // Helper function to traverse the source directory and identify all posts,
 // projects, templates, etc and parse.
 func (s *Site) read() error {
@@ -142,7 +151,7 @@ func (s *Site) read() error {
 
 	// func to walk the jekyll directory structure
 	walker := func(fn string, fi os.FileInfo, err error) error {
-
+		log.Printf("Processing %s...", fn)
 		rel, _ := filepath.Rel(s.Src, fn)
 		switch {
 		case err != nil:
@@ -176,9 +185,7 @@ func (s *Site) read() error {
 			if err != nil {
 				return err
 			}
-			if page.GetTitle() != "" {
-				s.pages = append(s.pages, page)
-			}
+			s.pages = append(s.pages, page)
 
 		// Move static files, no processing required
 		case isStatic(rel):
@@ -203,7 +210,9 @@ func (s *Site) read() error {
 
 	// Add the posts, timestamp, etc to the Site Params
 	s.Conf.Set("posts", s.posts)
-	s.Conf.Set("pages", s.pages)
+
+	s.Conf.Set("pages", Filter(s.pages, func(v Page) bool { return len(v.GetTitle()) > 0 }))
+
 	s.Conf.Set("time", time.Now())
 	s.calculateTags()
 	s.calculateCategories()

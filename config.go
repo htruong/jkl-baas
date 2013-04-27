@@ -1,11 +1,11 @@
 package main
 
 import (
+	"github.com/htruong/toml"
 	"io/ioutil"
-	"launchpad.net/goyaml"
 )
 
-// Config represents the key-value pairs in a _config.yml file.
+// Config represents the key-value pairs in a _config.toml file.
 // The file is freeform, and thus requires the flexibility of a map.
 type Config map[string]interface{}
 
@@ -42,8 +42,8 @@ func ParseConfig(path string) (Config, error) {
 }
 
 func parseConfig(data []byte) (Config, error) {
-	conf := map[string] interface{} { }
-	err := goyaml.Unmarshal(data, &conf)
+	conf := map[string]interface{}{}
+	err := toml.Unmarshal(string(data), &conf)
 	if err != nil {
 		return nil, err
 	}
@@ -51,12 +51,12 @@ func parseConfig(data []byte) (Config, error) {
 	return conf, nil
 }
 
-// DeployConfig represents the key-value data in the _jekyll_s3.yml file
+// DeployConfig represents the key-value data in the _jekyll_s3.toml file
 // used for deploying a website to Amazon's S3.
 type DeployConfig struct {
-	Key    string `s3_id`
-	Secret string `s3_secret`
-	Bucket string `s3_bucket`
+	Key    string
+	Secret string
+	Bucket string
 }
 
 // ParseDeployConfig will parse a YAML file at the given path and return
@@ -71,7 +71,7 @@ func ParseDeployConfig(path string) (*DeployConfig, error) {
 
 func parseDeployConfig(data []byte) (*DeployConfig, error) {
 	conf := DeployConfig{}
-	err := goyaml.Unmarshal(data, &conf)
+	err := toml.Unmarshal(string(data), &conf)
 	if err != nil {
 		return nil, err
 	}

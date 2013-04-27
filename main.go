@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/howeyc/fsnotify"
+	//"github.com/nu7hatch/gouuid"
 	"io"
 	"io/ioutil"
 	"launchpad.net/goamz/aws"
@@ -23,12 +24,13 @@ import (
 
 type SiteConf struct {
 	Name,
+	Email,
 	BaseURL,
 	HostName,
 	CloneURLType,
 	CloneURL,
-	NeedsDeployment,
 	APISecret string
+	NeedsDeployment bool
 }
 
 type APIResponse struct {
@@ -48,8 +50,10 @@ var (
 
 var (
 	// jekyll blog-as-a-service config files
-	globalconf = flag.String("conf", "jekyll-baas.conf", "Global config file")
-	sitesconf  = flag.String("sites", "sites.json", "Sites list file")
+	globalconfS = flag.String("conf", "jekyll-baas.conf", "Global config file")
+	sitesconfS  = flag.String("sites", "sites.json", "Sites list file")
+	globalconf  string
+	sitesconf   string
 )
 
 func runWithTimeout(cmd *exec.Cmd) {
@@ -65,7 +69,7 @@ func runWithTimeout(cmd *exec.Cmd) {
 		done <- cmd.Wait()
 	}()
 	select {
-	case <-time.After(30 * time.Second):
+	case <-time.After(60 * time.Second):
 		if err := cmd.Process.Kill(); err != nil {
 			log.Fatal("Failed to kill: ", err)
 		}
@@ -84,18 +88,37 @@ func jekyllProcessorConsumer(ch chan SiteConf) {
 		job := <-ch
 		log.Printf("--- Got job --> %s ---", job.Name)
 
-		log.Printf("Pulling from source...")
-		// Convert the directory to an absolute path
-
 		src, _ := filepath.Abs(filepath.Join(basedir, sitedir, job.HostName))
 		dest, _ := filepath.Abs(filepath.Join(basedir, gendir, job.HostName))
 		outd, _ := filepath.Abs(filepath.Join(basedir, outdir, job.HostName))
 
-		gitpullcmd := exec.Command("git", "--git-dir="+src+"/.git", "--work-tree="+src, "pull")
+		allsitesdir, _ := filepath.Abs(filepath.Join(basedir, sitedir))
 
-		runWithTimeout(gitpullcmd)
+		// Needs initial deployment
+		if job.NeedsDeployment {
+			log.Printf("Cloning from source...")
+			/*
+				if err := os.MkdirAll(src, 0755); err != nil {
+					log.Printf("Makedir %s error?\n", src)
+					continue
+				}
+			*/
+			os.Chdir(allsitesdir)
+			gitclonecmd := exec.Command("git", "clone", job.CloneURL, job.HostName)
+			runWithTimeout(gitclonecmd)
+
+		} else {
+
+			log.Printf("Pulling from source...")
+			// Convert the directory to an absolute path
+
+			gitpullcmd := exec.Command("git", "--git-dir="+src+"/.git", "--work-tree="+src, "pull")
+
+			runWithTimeout(gitpullcmd)
+		}
 
 		log.Printf(" Done!\n")
+
 		log.Printf("Generating static site...\n")
 
 		// Change the working directory to the website's source directory
@@ -135,11 +158,27 @@ func jekyllProcessorConsumer(ch chan SiteConf) {
 
 		runWithTimeout(rsynccmd)
 
+		uploaderqueue := make(chan string)
+
+		go watch(job, ch, uploaderqueue)
+
+		if job.NeedsDeployment {
+			walker := func(fn string, fi os.FileInfo, err error) error {
+				if fi.IsDir() {
+					return nil
+				}
+				uploaderqueue <- fn
+				return nil
+			}
+
+			filepath.Walk(outd, walker)
+		}
+
 		log.Printf(" Done!\n")
 	}
 }
 
-func watch(job SiteConf, ch chan SiteConf) {
+func watch(job SiteConf, ch chan SiteConf, uploaderqueue chan string) {
 
 	// Deploys the static website to S3
 	var conf *DeployConfig
@@ -170,10 +209,11 @@ func watch(job SiteConf, ch chan SiteConf) {
 	// Get recursive list of directories to watch
 	src, _ := filepath.Abs(filepath.Join(basedir, outdir, job.HostName))
 
-	uploaderqueue := make(chan string)
-
 	go func() {
-		auth := aws.Auth{conf.Key, conf.Secret}
+		auth := aws.Auth{
+			AccessKey: conf.Key,
+			SecretKey: conf.Secret,
+		}
 		b := s3.New(auth, aws.USEast).Bucket(conf.Bucket)
 		lastAuth := time.Now()
 		for {
@@ -187,7 +227,10 @@ func watch(job SiteConf, ch chan SiteConf) {
 
 			// if it's too long ago, then reauthenticate
 			if time.Since(lastAuth).Minutes() > 2 {
-				auth = aws.Auth{conf.Key, conf.Secret}
+				auth = aws.Auth{
+					AccessKey: conf.Key,
+					SecretKey: conf.Secret,
+				}
 				b = s3.New(auth, aws.USEast).Bucket(conf.Bucket)
 			}
 
@@ -196,6 +239,9 @@ func watch(job SiteConf, ch chan SiteConf) {
 			}
 
 			rel, _ := filepath.Rel(src, fn)
+
+			log.Printf("[%s] Got file %s, uploading... ", job.HostName, rel)
+
 			typ := mime.TypeByExtension(filepath.Ext(rel))
 			content, err := ioutil.ReadFile(fn)
 			log.Printf("[%s] Uploading %s...", job.HostName, rel)
@@ -228,6 +274,8 @@ func watch(job SiteConf, ch chan SiteConf) {
 	}
 
 	log.Printf("[%s] Watching %s\n", job.HostName, src)
+	//os.MkdirAll(src, 0755)
+
 	for _, path := range dirs(src) {
 		if err := watcher.Watch(path); err != nil {
 			fmt.Println(err)
@@ -244,6 +292,7 @@ func watch(job SiteConf, ch chan SiteConf) {
 				uploaderqueue <- ev.Name
 				fi, _ := os.Stat(ev.Name)
 				if fi.IsDir() {
+					log.Printf("[%s] Trying to watch newly created folder: %s", job.HostName, ev.Name)
 					watcher.Watch(ev.Name)
 				}
 			}
@@ -254,13 +303,38 @@ func watch(job SiteConf, ch chan SiteConf) {
 	}
 }
 
+func configwatch(ch chan bool, allSites *[]SiteConf) {
+	log.Printf("Sites configuration watcher started.")
+	for {
+		<-ch
+		log.Printf("Saving sites configuration...")
+
+		fi, err := os.Create(sitesconf)
+
+		if err != nil {
+			log.Printf("FAILED!")
+			continue
+		}
+
+		b, _ := json.Marshal(allSites)
+		fi.Write(b)
+		//log.Printf("About to write '%s' to %s", string(b), *sitesconf)
+		fi.Close()
+	}
+}
+
 func main() {
 	flag.Parse()
+	globalconf, _ = filepath.Abs(*globalconfS)
+	sitesconf, _ = filepath.Abs(*sitesconfS)
 
-	c, err := conf.ReadConfigFile(*globalconf)
+	log.Printf("Program started with global config file %s, sites %s\n", globalconf, sitesconf)
+
+	c, err := conf.ReadConfigFile(globalconf)
+	allSites := []SiteConf{}
 
 	if err != nil {
-		log.Fatal("Error while opening global config file: %s. Bailing out!\n", err)
+		log.Fatalf("Error while opening global config file: %s. Bailing out!\n", err)
 	}
 
 	port, err := c.GetString("general", "port")
@@ -287,9 +361,10 @@ func main() {
 		log.Fatal("No default global S3 secret found. Configure yours in the global config file!\n", err)
 	}
 
-	fi, err := os.Open(*sitesconf)
+	fi, err := os.Open(sitesconf)
 
 	work := make(chan SiteConf)
+	saveConfig := make(chan bool)
 
 	go jekyllProcessorConsumer(work)
 
@@ -302,26 +377,20 @@ func main() {
 
 	dec := json.NewDecoder(fi)
 
-	allSites := []SiteConf{}
+	if err := dec.Decode(&allSites); err == io.EOF {
 
-	for {
-		var s SiteConf
-		if err := dec.Decode(&s); err == io.EOF {
-			break
-		} else if err != nil {
-			log.Fatal(err)
-		}
-		log.Printf("[conf] Got site: %s: %s!\n", s.Name, s.HostName)
-		allSites = append(allSites, s)
+	} else if err != nil {
+		log.Fatal(err)
 	}
 
 	for _, s := range allSites {
 		log.Printf("Site: %s [%s]\n", s.Name, s.HostName)
-		go watch(s, work)
 		work <- s
 	}
 
 	fi.Close()
+
+	go configwatch(saveConfig, &allSites)
 
 	// Create the handler to serve from the filesystem
 	http.HandleFunc("/update/", func(w http.ResponseWriter, r *http.Request) {
@@ -350,6 +419,39 @@ func main() {
 		w.Header().Set("Content-Type", "text/javascript")
 		w.Header().Set("Cache-Control", "no-cache")
 		msgToSend, _ := json.Marshal(msg)
+
+		w.Write(msgToSend)
+	})
+
+	http.HandleFunc("/add/", func(w http.ResponseWriter, r *http.Request) {
+		//newUUID, _ := uuid.NewV4()
+		newSite := SiteConf{
+			Name:            r.URL.Query().Get("name"),
+			Email:           r.URL.Query().Get("email"),
+			BaseURL:         r.URL.Query().Get("baseurl"),
+			HostName:        r.URL.Query().Get("hostname"),
+			CloneURLType:    r.URL.Query().Get("clonetype"),
+			CloneURL:        r.URL.Query().Get("cloneurl"),
+			NeedsDeployment: true,
+			APISecret:       "shibboleth",
+		}
+
+		work <- newSite
+
+		newSite.NeedsDeployment = false
+
+		allSites = append(allSites, newSite)
+
+		msg := APIResponse{
+			Code:    200,
+			Message: fmt.Sprintf("%s", newSite.APISecret),
+		}
+
+		w.Header().Set("Content-Type", "text/javascript")
+		w.Header().Set("Cache-Control", "no-cache")
+		msgToSend, _ := json.Marshal(msg)
+
+		saveConfig <- true
 
 		w.Write(msgToSend)
 	})
