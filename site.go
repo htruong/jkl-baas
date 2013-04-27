@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"launchpad.net/goamz/aws"
 	"launchpad.net/goamz/s3"
+	"log"
 	"mime"
 	"os"
 	"path/filepath"
@@ -20,13 +21,13 @@ var (
 )
 
 type Site struct {
-	Src    string  // Directory where Jekyll will look to transform files
-	Dest   string  // Directory where Jekyll will write files to
-	Conf   Config  // Configuration date from the _config.yml file
+	Src  string // Directory where Jekyll will look to transform files
+	Dest string // Directory where Jekyll will write files to
+	Conf Config // Configuration date from the _config.yml file
 
-	posts []Page   // Posts thet need to be generated
-	pages []Page   // Pages that need to be generated
-	files []string // Static files to get copied to the destination
+	posts []Page             // Posts thet need to be generated
+	pages []Page             // Pages that need to be generated
+	files []string           // Static files to get copied to the destination
 	templ *template.Template // Compiled templates
 }
 
@@ -35,15 +36,15 @@ func NewSite(src, dest string) (*Site, error) {
 	// Parse the _config.yml file
 	path := filepath.Join(src, "_config.yml")
 	conf, err := ParseConfig(path)
-	logf(MsgUsingConfig, path)
+	log.Printf(MsgUsingConfig, path)
 	if err != nil {
 		return nil, err
 	}
 
-	site := Site {
-		Src  : src,
-		Dest : dest,
-		Conf : conf,
+	site := Site{
+		Src:  src,
+		Dest: dest,
+		Conf: conf,
 	}
 
 	// Recursively process all files in the source directory
@@ -79,12 +80,20 @@ func (s *Site) Generate() error {
 
 	// Remove previously generated site, and then (re)create the
 	// destination directory
-	if err := s.Clear(); err != nil { return err }
-	if err := s.Prep() ; err != nil { return err }
+	if err := s.Clear(); err != nil {
+		return err
+	}
+	if err := s.Prep(); err != nil {
+		return err
+	}
 
 	// Generate all Pages and Posts and static files
-	if err := s.writePages() ; err != nil { return err }
-	if err := s.writeStatic(); err != nil { return err }
+	if err := s.writePages(); err != nil {
+		return err
+	}
+	if err := s.writeStatic(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -104,15 +113,15 @@ func (s *Site) Deploy(user, pass, url string) error {
 		rel, _ := filepath.Rel(s.Dest, fn)
 		typ := mime.TypeByExtension(filepath.Ext(rel))
 		content, err := ioutil.ReadFile(fn)
-		logf(MsgUploadFile, rel)
+		log.Printf(MsgUploadFile, rel)
 		if err != nil {
 			return err
 		}
-		
+
 		// try to upload the file ... sometimes this fails due to amazon
 		// issues. If so, we'll re-try
 		if err := b.Put(rel, content, typ, s3.PublicRead); err != nil {
-			time.Sleep(100*time.Millisecond) // sleep so that we don't immediately retry
+			time.Sleep(100 * time.Millisecond) // sleep so that we don't immediately retry
 			return b.Put(rel, content, typ, s3.PublicRead)
 		}
 
@@ -136,37 +145,43 @@ func (s *Site) read() error {
 
 		rel, _ := filepath.Rel(s.Src, fn)
 		switch {
-		case err != nil :
+		case err != nil:
 			return nil
 
 		// Ignore directories
-		case fi.IsDir() :
+		case fi.IsDir():
 			return nil
 
 		// Ignore Hidden or Temp files
 		// (starting with . or ending with ~)
-		case isHiddenOrTemp(rel) :
+		case isHiddenOrTemp(rel):
 			return nil
 
 		// Parse Templates
-		case isTemplate(rel) :
+		case isTemplate(rel):
 			layouts = append(layouts, fn)
 
 		// Parse Posts
-		case isPost(rel) :
+		case isPost(rel):
 			post, err := ParsePost(rel)
-			if err != nil { return err }
+			if err != nil {
+				return err
+			}
 			// TODO: this is a hack to get the posts in rev chronological order
-			s.posts = append([]Page{post}, s.posts...)//s.posts, post)
+			s.posts = append([]Page{post}, s.posts...) //s.posts, post)
 
 		// Parse Pages
-		case isPage(rel) :
+		case isPage(rel):
 			page, err := ParsePage(rel)
-			if err != nil { return err }
-			s.pages = append(s.pages, page)
+			if err != nil {
+				return err
+			}
+			if page.GetTitle() != "" {
+				s.pages = append(s.pages, page)
+			}
 
 		// Move static files, no processing required
-		case isStatic(rel) :
+		case isStatic(rel):
 			s.files = append(s.files, rel)
 		}
 		return nil
@@ -188,6 +203,7 @@ func (s *Site) read() error {
 
 	// Add the posts, timestamp, etc to the Site Params
 	s.Conf.Set("posts", s.posts)
+	s.Conf.Set("pages", s.pages)
 	s.Conf.Set("time", time.Now())
 	s.calculateTags()
 	s.calculateCategories()
@@ -209,7 +225,6 @@ func (s *Site) writePages() error {
 	for _, page := range pages {
 		url := page.GetUrl()
 		layout := page.GetLayout()
-		
 
 		// is the layout provided? or is it nil /empty?
 		//layoutNil := layout == "" || layout == "nil"
@@ -231,7 +246,7 @@ func (s *Site) writePages() error {
 		//}
 
 		//data passed in to each template
-		data := map[string]interface{} {
+		data := map[string]interface{}{
 			"site": s.Conf,
 			"page": page,
 		}
@@ -242,18 +257,20 @@ func (s *Site) writePages() error {
 			// this code will add the page to the list of templates,
 			// will execute the template, and then set the content
 			// to the rendered template
-			t, err := s.templ.New(url).Parse(content);
-			if err != nil { return err }
+			t, err := s.templ.New(url).Parse(content)
+			if err != nil {
+				return err
+			}
 			var buf bytes.Buffer
-			err = t.ExecuteTemplate(&buf, url, data);
-			if err != nil { return err }
+			err = t.ExecuteTemplate(&buf, url, data)
+			if err != nil {
+				return err
+			}
 			content = buf.String()
 		}
 
 		// add document body to the map
 		data["content"] = content
-
-
 
 		// write the template to a buffer
 		// NOTE: if template is nil or empty, then we should parse the
@@ -271,13 +288,13 @@ func (s *Site) writePages() error {
 			s.templ.ExecuteTemplate(&buf, layout, data)
 		}
 
-		logf(MsgGenerateFile, url)
+		log.Printf(MsgGenerateFile, url)
 		if err := ioutil.WriteFile(f, buf.Bytes(), 0644); err != nil {
 			return err
 		}
 	}
 
-	return nil	
+	return nil
 }
 
 // Helper function to write all static files to the destination directory
@@ -287,8 +304,8 @@ func (s *Site) writeStatic() error {
 
 	for _, file := range s.files {
 		from := filepath.Join(s.Src, file)
-		to   := filepath.Join(s.Dest, file)
-		logf(MsgCopyingFile, file)
+		to := filepath.Join(s.Dest, file)
+		log.Printf(MsgCopyingFile, file)
 		if err := copyTo(from, to); err != nil {
 			return err
 		}
@@ -307,7 +324,7 @@ func (s *Site) calculateCategories() {
 			if posts, ok := categories[category]; ok == false {
 				categories[category] = append(posts, post)
 			} else {
-				categories[category] = []Page{ post }
+				categories[category] = []Page{post}
 			}
 		}
 	}
@@ -325,7 +342,7 @@ func (s *Site) calculateTags() {
 			if posts, ok := tags[tag]; ok == false {
 				tags[tag] = append(posts, post)
 			} else {
-				tags[tag] = []Page{ post }
+				tags[tag] = []Page{post}
 			}
 		}
 	}
