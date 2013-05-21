@@ -94,6 +94,16 @@ func jekyllProcessorConsumer(ch chan SiteConf) {
 
 		allsitesdir, _ := filepath.Abs(filepath.Join(basedir, sitedir))
 
+		log.Printf("The gen dir is %s out dir is %s", dest, outd)
+
+		if err := os.MkdirAll(outd, 0755); err != nil {
+			log.Printf("Makedir %s error?\n", outd)
+			continue
+		}
+
+		uploaderqueue := make(chan string)
+		go watch(job, ch, uploaderqueue)
+
 		// Needs initial deployment
 		if job.NeedsDeployment {
 			log.Printf("Cloning from source...")
@@ -147,20 +157,11 @@ func jekyllProcessorConsumer(ch chan SiteConf) {
 
 		log.Printf("Calculating differences...\n")
 		// Now sync it to the outdir
-		log.Printf("The gen dir is %s out dir is %s", dest, outd)
 
-		if err := os.MkdirAll(outd, 0755); err != nil {
-			log.Printf("Makedir %s error?\n", outd)
-			continue
-		}
 		// The ending slash makes rsync sync the same level directory
 		rsynccmd := exec.Command("rsync", "--delete", "--size-only", "--recursive", dest+"/", outd)
 
 		runWithTimeout(rsynccmd)
-
-		uploaderqueue := make(chan string)
-
-		go watch(job, ch, uploaderqueue)
 
 		if job.NeedsDeployment {
 			walker := func(fn string, fi os.FileInfo, err error) error {
