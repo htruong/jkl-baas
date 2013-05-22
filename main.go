@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/howeyc/fsnotify"
-	//"github.com/nu7hatch/gouuid"
+	"github.com/nu7hatch/gouuid"
 	"io"
 	"io/ioutil"
 	"launchpad.net/goamz/aws"
@@ -36,6 +36,12 @@ type SiteConf struct {
 type APIResponse struct {
 	Code    uint
 	Message string
+}
+
+type UploaderQueue struct {
+	File    string
+	RelPath string
+	Conf    DeployConfig
 }
 
 var (
@@ -80,13 +86,13 @@ func runWithTimeout(cmd *exec.Cmd) {
 	}
 }
 
-func jekyllProcessorConsumer(ch chan SiteConf) {
+func jekyllProcessorConsumer(ch chan SiteConf, configwatcher chan bool) {
 	log.Printf("Site renderer module launching...\n")
 	for {
 		log.Printf("Waiting for new changes to process...\n")
 
 		job := <-ch
-		log.Printf("--- Got job --> %s ---", job.Name)
+		log.Printf("--- Got job: %s ---", job.Name)
 
 		src, _ := filepath.Abs(filepath.Join(basedir, sitedir, job.HostName))
 		dest, _ := filepath.Abs(filepath.Join(basedir, gendir, job.HostName))
@@ -95,14 +101,6 @@ func jekyllProcessorConsumer(ch chan SiteConf) {
 		allsitesdir, _ := filepath.Abs(filepath.Join(basedir, sitedir))
 
 		log.Printf("The gen dir is %s out dir is %s", dest, outd)
-
-		if err := os.MkdirAll(outd, 0755); err != nil {
-			log.Printf("Makedir %s error?\n", outd)
-			continue
-		}
-
-		uploaderqueue := make(chan string)
-		go watch(job, ch, uploaderqueue)
 
 		// Needs initial deployment
 		if job.NeedsDeployment {
@@ -137,9 +135,9 @@ func jekyllProcessorConsumer(ch chan SiteConf) {
 		// Initialize the Jekyll website
 		site, err := NewSite(src, dest)
 		if err != nil {
-			fmt.Printf("Error on site %s while trying to initialize: %v. This site will be temporary disabled!\n", job.Name, err)
+			fmt.Printf("Error on site %s while trying to initialize: %v. This site will be temporarily disabled until next tickle!\n", job.Name, err)
 			//os.Exit(1)
-			return
+			continue
 		}
 
 		if len(job.BaseURL) != 0 {
@@ -150,7 +148,7 @@ func jekyllProcessorConsumer(ch chan SiteConf) {
 		if err := site.Generate(); err != nil {
 			fmt.Printf("Error on site %s while trying to generate static content: %v\n", job.Name, err)
 			//os.Exit(1)
-			return
+			continue
 		}
 
 		log.Printf(" Done!\n")
@@ -163,29 +161,18 @@ func jekyllProcessorConsumer(ch chan SiteConf) {
 
 		runWithTimeout(rsynccmd)
 
-		if job.NeedsDeployment {
-			walker := func(fn string, fi os.FileInfo, err error) error {
-				if fi.IsDir() {
-					return nil
-				}
-				uploaderqueue <- fn
-				return nil
-			}
-
-			filepath.Walk(outd, walker)
-		}
-
 		log.Printf(" Done!\n")
 	}
 }
 
-func watch(job SiteConf, ch chan SiteConf, uploaderqueue chan string) {
+func watch(job SiteConf, uploaderqueue chan UploaderQueue) {
 
 	// Deploys the static website to S3
 	var conf *DeployConfig
 	// Read the S3 configuration details if there is a s3 conf file
 
 	path := filepath.Join(basedir, sitedir, job.HostName, "_jekyll_s3.yml")
+
 	fi, err := os.Stat(path)
 	if fi != nil && err == nil {
 		conf, err = ParseDeployConfig(path)
@@ -199,73 +186,13 @@ func watch(job SiteConf, ch chan SiteConf, uploaderqueue chan string) {
 		conf = &DeployConfig{s3key, s3secret, job.HostName}
 	}
 
-	/*
-		if err := site.Deploy(conf.Key, conf.Secret, conf.Bucket); err != nil {
-			fmt.Printf("Error on site %s while trying to deploy to s3: %v\n", job.Name, err)
-			//os.Exit(1)
-			return
-		}
-	*/
-
 	// Get recursive list of directories to watch
 	src, _ := filepath.Abs(filepath.Join(basedir, outdir, job.HostName))
 
-	go func() {
-		auth := aws.Auth{
-			AccessKey: conf.Key,
-			SecretKey: conf.Secret,
-		}
-		b := s3.New(auth, aws.USEast).Bucket(conf.Bucket)
-		lastAuth := time.Now()
-		for {
-			fn := <-uploaderqueue
-			fi, err := os.Stat(fn)
-
-			if err != nil {
-				log.Printf("There was an error getting the file %s: %v", fn, err)
-				continue
-			}
-
-			// if it's too long ago, then reauthenticate
-			if time.Since(lastAuth).Minutes() > 2 {
-				auth = aws.Auth{
-					AccessKey: conf.Key,
-					SecretKey: conf.Secret,
-				}
-				b = s3.New(auth, aws.USEast).Bucket(conf.Bucket)
-			}
-
-			if fi.IsDir() {
-				continue
-			}
-
-			rel, _ := filepath.Rel(src, fn)
-
-			log.Printf("[%s] Got file %s, uploading... ", job.HostName, rel)
-
-			typ := mime.TypeByExtension(filepath.Ext(rel))
-			content, err := ioutil.ReadFile(fn)
-			log.Printf("[%s] Uploading %s...", job.HostName, rel)
-			if err != nil {
-				continue
-			}
-
-			// try to upload the file ... sometimes this fails due to amazon
-			// issues. If so, we'll re-try
-			if err := b.Put(rel, content, typ, s3.PublicRead); err != nil {
-				time.Sleep(100 * time.Millisecond) // sleep so that we don't immediately retry
-				err2 := b.Put(rel, content, typ, s3.PublicRead)
-				if err2 != nil {
-					log.Printf(" Failed!\n")
-					continue
-				}
-			}
-			log.Printf(" Success!")
-
-			lastAuth = time.Now()
-
-		}
-	}()
+	if err := os.MkdirAll(src, 0755); err != nil {
+		log.Printf("Makedir %s error?\n", src)
+		return
+	}
 
 	// Setup the inotify watcher
 	watcher, err := fsnotify.NewWatcher()
@@ -290,7 +217,12 @@ func watch(job SiteConf, ch chan SiteConf, uploaderqueue chan string) {
 			// Ignore changes to the _site directoy, hidden, or temp files
 			if !isHiddenOrTemp(ev.Name) && (ev.IsCreate() || ev.IsModify()) {
 				log.Printf("[%s] File created or modified: %s", job.HostName, ev.Name)
-				uploaderqueue <- ev.Name
+				rel, _ := filepath.Rel(src, ev.Name)
+				uploaderqueue <- UploaderQueue{
+					File:    ev.Name,
+					RelPath: rel,
+					Conf:    *conf,
+				}
 				fi, _ := os.Stat(ev.Name)
 				if fi.IsDir() {
 					log.Printf("[%s] Trying to watch newly created folder: %s", job.HostName, ev.Name)
@@ -301,6 +233,54 @@ func watch(job SiteConf, ch chan SiteConf, uploaderqueue chan string) {
 		case err := <-watcher.Error:
 			fmt.Println("inotify error:", err)
 		}
+	}
+}
+
+func s3uploader(ch chan UploaderQueue) {
+	for {
+		work := <-ch
+		conf := work.Conf
+		fn := work.File
+		rel := work.RelPath
+		auth := aws.Auth{
+			AccessKey: conf.Key,
+			SecretKey: conf.Secret,
+		}
+
+		b := s3.New(auth, aws.USEast).Bucket(conf.Bucket)
+
+		fi, err := os.Stat(fn)
+
+		if err != nil {
+			log.Printf("[s3uploader] There was an error getting the file %s: %v", fn, err)
+			continue
+		}
+
+		if fi.IsDir() {
+			continue
+		}
+
+		log.Printf("[s3uploader] Got file %s, uploading... ", rel)
+
+		typ := mime.TypeByExtension(filepath.Ext(rel))
+		content, err := ioutil.ReadFile(fn)
+		//log.Printf("[s3uploader] Uploading %s...", rel)
+		if err != nil {
+			continue
+		}
+
+		// try to upload the file ... sometimes this fails due to amazon
+		// issues. If so, we'll re-try
+		if err := b.Put(rel, content, typ, s3.PublicRead); err != nil {
+			time.Sleep(100 * time.Millisecond) // sleep so that we don't immediately retry
+			err2 := b.Put(rel, content, typ, s3.PublicRead)
+			if err2 != nil {
+				log.Printf("[s3] Uploading %s... Failed!\n")
+				continue
+			}
+		}
+		log.Printf("[s3] Uploading %s... Success!")
+
 	}
 }
 
@@ -366,8 +346,13 @@ func main() {
 
 	work := make(chan SiteConf)
 	saveConfig := make(chan bool)
+	uploaderqueue := make(chan UploaderQueue)
 
-	go jekyllProcessorConsumer(work)
+	go configwatch(saveConfig, &allSites)
+
+	go s3uploader(uploaderqueue)
+
+	go jekyllProcessorConsumer(work, saveConfig)
 
 	if err != nil {
 		fmt.Printf("File error while trying to open the sites config: %v\n", err)
@@ -386,12 +371,12 @@ func main() {
 
 	for _, s := range allSites {
 		log.Printf("Site: %s [%s]\n", s.Name, s.HostName)
+
+		go watch(s, uploaderqueue)
 		work <- s
 	}
 
 	fi.Close()
-
-	go configwatch(saveConfig, &allSites)
 
 	// Create the handler to serve from the filesystem
 	http.HandleFunc("/update/", func(w http.ResponseWriter, r *http.Request) {
@@ -425,7 +410,7 @@ func main() {
 	})
 
 	http.HandleFunc("/add/", func(w http.ResponseWriter, r *http.Request) {
-		//newUUID, _ := uuid.NewV4()
+		newUUID, _ := uuid.NewV4()
 		newSite := SiteConf{
 			Name:            r.URL.Query().Get("name"),
 			Email:           r.URL.Query().Get("email"),
@@ -434,9 +419,10 @@ func main() {
 			CloneURLType:    r.URL.Query().Get("clonetype"),
 			CloneURL:        r.URL.Query().Get("cloneurl"),
 			NeedsDeployment: true,
-			APISecret:       "shibboleth",
+			APISecret:       newUUID.String(),
 		}
 
+		go watch(newSite, uploaderqueue)
 		work <- newSite
 
 		newSite.NeedsDeployment = false
