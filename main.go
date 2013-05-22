@@ -260,7 +260,7 @@ func s3uploader(ch chan UploaderQueue) {
 			continue
 		}
 
-		log.Printf("[s3uploader] Got file %s, uploading... ", rel)
+		log.Printf("[s3uploader] Got file %s, uploading... ", fn)
 
 		typ := mime.TypeByExtension(filepath.Ext(rel))
 		content, err := ioutil.ReadFile(fn)
@@ -275,11 +275,11 @@ func s3uploader(ch chan UploaderQueue) {
 			time.Sleep(100 * time.Millisecond) // sleep so that we don't immediately retry
 			err2 := b.Put(rel, content, typ, s3.PublicRead)
 			if err2 != nil {
-				log.Printf("[s3] Uploading %s... Failed!\n")
+				log.Printf("[s3] Uploading %s... Failed!\n", fn)
 				continue
 			}
 		}
-		log.Printf("[s3] Uploading %s... Success!")
+		log.Printf("[s3] Uploading %s... Success!", fn)
 
 	}
 }
