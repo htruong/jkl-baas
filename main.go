@@ -56,10 +56,11 @@ var (
 
 var (
 	// jekyll blog-as-a-service config files
-	globalconfS = flag.String("conf", "jekyll-baas.conf", "Global config file")
-	sitesconfS  = flag.String("sites", "sites.json", "Sites list file")
-	globalconf  string
-	sitesconf   string
+	advancedMode = flag.Bool("advanced", false, "Advanced operations mode")
+	globalconfS  = flag.String("conf", "jekyll-baas.conf", "Global config file")
+	sitesconfS   = flag.String("sites", "sites.json", "Sites list file")
+	globalconf   string
+	sitesconf    string
 )
 
 func runWithTimeout(cmd *exec.Cmd) {
@@ -306,6 +307,25 @@ func configwatch(ch chan bool, allSites *[]SiteConf) {
 
 func main() {
 	flag.Parse()
+
+	if *advancedMode == false {
+		// Initialize the Jekyll website
+		site, err := NewSite(".", "./_out")
+		if err != nil {
+			fmt.Printf("Error on site while trying to render: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Generate the static website
+		if err := site.Generate(); err != nil {
+			fmt.Printf("Error on site while trying to generate static content: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Site generated successfully. Viva la Oryza!\n")
+		os.Exit(0)
+	}
+
 	globalconf, _ = filepath.Abs(*globalconfS)
 	sitesconf, _ = filepath.Abs(*sitesconfS)
 
