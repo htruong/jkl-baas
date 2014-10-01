@@ -330,7 +330,7 @@ func (s *Site) writeStatic() error {
 	for _, file := range s.files {
 		from := filepath.Join(s.Src, file)
 		to := filepath.Join(s.Dest, file)
-		log.Printf(MsgCopyingFile, file)
+		//log.Printf(MsgCopyingFile, file)
 		if err := copyTo(from, to); err != nil {
 			return err
 		}
