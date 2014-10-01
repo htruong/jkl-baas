@@ -2,13 +2,16 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io/ioutil"
 	"launchpad.net/goamz/aws"
 	"launchpad.net/goamz/s3"
 	"log"
 	"mime"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strings"
 	"text/template"
 	"time"
 )
@@ -151,7 +154,6 @@ func (s *Site) read() error {
 
 	// func to walk the jekyll directory structure
 	walker := func(fn string, fi os.FileInfo, err error) error {
-		log.Printf("Processing %s...", fn)
 		rel, _ := filepath.Rel(s.Src, fn)
 		switch {
 		case err != nil:
@@ -168,10 +170,12 @@ func (s *Site) read() error {
 
 		// Parse Templates
 		case isTemplate(rel):
+			log.Printf("Processing template %s...", fn)
 			layouts = append(layouts, fn)
 
 		// Parse Posts
 		case isPost(rel):
+			log.Printf("Processing post %s...", fn)
 			post, err := ParsePost(rel)
 			if err != nil {
 				return err
@@ -181,10 +185,12 @@ func (s *Site) read() error {
 
 		// Parse Pages
 		case isPage(rel):
+			log.Printf("Processing page %s...", fn)
 			page, err := ParsePage(rel)
 			if err != nil {
 				return err
 			}
+
 			s.pages = append(s.pages, page)
 
 		// Move static files, no processing required
@@ -214,8 +220,18 @@ func (s *Site) read() error {
 	s.Conf.Set("pages", Filter(s.pages, func(v Page) bool { return len(v.GetTitle()) > 0 }))
 
 	s.Conf.Set("time", time.Now())
+
+	if hostname, err := os.Hostname(); err == nil {
+		s.Conf.Set("buildhost", hostname)
+	}
+
+	if user, err := user.LookupId(fmt.Sprintf("%d", os.Getuid())); err == nil {
+		s.Conf.Set("builduser", user.Username)
+	}
+
 	s.calculateTags()
 	s.calculateCategories()
+	s.calculatePageHierachy()
 
 	return nil
 }
@@ -357,4 +373,25 @@ func (s *Site) calculateTags() {
 	}
 
 	s.Conf.Set("tags", tags)
+}
+
+func (s *Site) calculatePageHierachy() {
+	log.Printf("Processing site hierachy...\n")
+	for _, page := range s.pages {
+		children := make([]Page, 0)
+		if pageID, ok := page["id"].(string); ok {
+			log.Printf(" %s...\n", pageID)
+			for _, potentialChild := range s.pages {
+				if pageChildID, ok := potentialChild["id"].(string); ok {
+					if strings.HasPrefix(pageChildID, pageID+"_") {
+						children = append(children, potentialChild)
+						potentialChild["parent"] = page
+						log.Printf("  --> %s...\n", pageChildID)
+					}
+				}
+			}
+			page["children"] = children
+		}
+	}
+	log.Printf("Done processing site hierachy!\b")
 }
