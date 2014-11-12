@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	//"strings"
 	"time"
 	//"sync"
@@ -305,6 +306,16 @@ func configwatch(ch chan bool, allSites *[]SiteConf) {
 	}
 }
 
+var chttp = http.NewServeMux()
+
+func StaticGeneratorHandler(w http.ResponseWriter, r *http.Request) {
+	if strings.Contains(r.URL.Path, ".") {
+		chttp.ServeHTTP(w, r)
+	} else {
+		fmt.Fprintf(w, "StaticGeneratedFilesHandler")
+	}
+}
+
 func main() {
 	flag.Parse()
 
@@ -323,7 +334,17 @@ func main() {
 		}
 
 		fmt.Printf("Site generated successfully. Viva la Oryza!\n")
-		os.Exit(0)
+
+		fmt.Printf("Check your site at http://127.0.0.1:8080/\n")
+
+		//		chttp.Handle("/", http.FileServer(http.Dir("./_out")))
+
+		// Normal resources
+		http.Handle("/", http.FileServer(http.Dir("./_out/")))
+
+		http.ListenAndServe(":8080", nil)
+
+		//os.Exit(0)
 	}
 
 	globalconf, _ = filepath.Abs(*globalconfS)
