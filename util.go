@@ -63,7 +63,8 @@ func isHiddenOrTemp(fn string) bool {
 	return strings.HasPrefix(base, ".") ||
 		strings.HasPrefix(fn, ".") ||
 		strings.HasSuffix(base, "~") ||
-		fn == "README.md"
+		fn == "README.md" ||
+		fn == "Thumbs.db"
 }
 
 // Returns True if the file is a template. This is determine by the files

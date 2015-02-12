@@ -409,8 +409,8 @@ func (s *Site) resizeMedia() error {
 			thumb_exists = true
 		}
 
-		sane_final := filepath.Join(s.Dest, "sane_"+fnbase)
-		thumb_final := filepath.Join(s.Dest, "thumb_"+fnbase)
+		sane_final := filepath.Join(s.Dest, "media", "sane_"+fnbase)
+		thumb_final := filepath.Join(s.Dest, "media", "thumb_"+fnbase)
 
 		if !sane_exists || !thumb_exists {
 			if err := MakeThumb(from, sane_cache, thumb_cache); err != nil {
