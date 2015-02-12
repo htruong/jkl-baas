@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bitbucket.org/kardianos/osext"
 	"code.google.com/p/monnand-goconf"
 	"encoding/json"
 	"flag"
@@ -19,8 +20,8 @@ import (
 	"path/filepath"
 	"strings"
 	//"strings"
+	"sync"
 	"time"
-	//"sync"
 )
 
 type SiteConf struct {
@@ -57,11 +58,13 @@ var (
 
 var (
 	// jekyll blog-as-a-service config files
-	advancedMode = flag.Bool("advanced", false, "Advanced operations mode")
-	globalconfS  = flag.String("conf", "jekyll-baas.conf", "Global config file")
-	sitesconfS   = flag.String("sites", "sites.json", "Sites list file")
-	globalconf   string
-	sitesconf    string
+	advancedMode    = flag.Bool("multisites", false, "Multistes mode")
+	globalconfS     = flag.String("conf", "jekyll-baas.conf", "Global config file")
+	sitesconfS      = flag.String("sites", "sites.json", "Sites list file")
+	changetoExecDir = flag.Bool("cd", true, "Change to the current directory where the executable is when in single site mode")
+	port            = flag.Int("port", 8080, "Webserver/webservice port")
+	globalconf      string
+	sitesconf       string
 )
 
 func runWithTimeout(cmd *exec.Cmd) {
@@ -316,35 +319,96 @@ func StaticGeneratorHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+var mu sync.RWMutex
+
+func recompile(site *Site) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if err := site.Reload(); err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	if err := site.Generate(); err != nil {
+		fmt.Println(err)
+		return
+	}
+}
+
+func simpleWatch(site *Site) {
+
+	// Setup the inotify watcher
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	// Get recursive list of directories to watch
+	for _, path := range dirs(site.Src) {
+		if err := watcher.Watch(path); err != nil {
+			fmt.Println(err)
+			return
+		}
+	}
+
+	for {
+		select {
+		case ev := <-watcher.Event:
+			// Ignore changes to the _site directoy, hidden, or temp files
+			if !strings.HasPrefix(ev.Name, site.Dest) && !isHiddenOrTemp(ev.Name) {
+				fmt.Println("Event: ", ev.String())
+				recompile(site)
+			}
+		case err := <-watcher.Error:
+			fmt.Println("inotify error:", err)
+		}
+	}
+}
+
 func main() {
 	flag.Parse()
 
 	if *advancedMode == false {
+
+		if *changetoExecDir {
+			oryza_exec, _ := osext.Executable()
+			oryza_dir := filepath.Dir(oryza_exec)
+			log.Printf("Changing current directory to %s\n", oryza_dir)
+			os.Chdir(oryza_dir)
+
+		}
+
 		// Initialize the Jekyll website
-		site, err := NewSite(".", "./_out")
+		site, err := NewSite(".", "../_out")
+		os.MkdirAll("../_out", 0755)
 		if err != nil {
-			fmt.Printf("Error on site while trying to render: %v\n", err)
+			log.Printf("Error on site while trying to render: %v\n", err)
 			os.Exit(1)
 		}
 
 		// Generate the static website
 		if err := site.Generate(); err != nil {
-			fmt.Printf("Error on site while trying to generate static content: %v\n", err)
+			log.Printf("Error on site while trying to generate static content: %v\n", err)
 			os.Exit(1)
 		}
 
-		fmt.Printf("Site generated successfully. Viva la Oryza!\n")
+		log.Printf("Site generated successfully. Viva la Oryza!\n")
 
-		fmt.Printf("Check your site at http://127.0.0.1:8080/\n")
+		log.Printf("Check your site at http://127.0.0.1:8080/\n")
 
 		//		chttp.Handle("/", http.FileServer(http.Dir("./_out")))
 
 		// Normal resources
-		http.Handle("/", http.FileServer(http.Dir("./_out/")))
 
-		http.ListenAndServe(":8080", nil)
+		go simpleWatch(site)
 
-		//os.Exit(0)
+		http.Handle("/", http.FileServer(http.Dir("../_out/")))
+
+		http.ListenAndServe(fmt.Sprintf(":%d", *port), nil)
+
+		os.Exit(0)
 	}
 
 	globalconf, _ = filepath.Abs(*globalconfS)

@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"io"
 	"os"
-	"os/exec"
+	//	"os/exec"
+	//"log"
 	"path/filepath"
 	"strings"
 )
@@ -18,16 +19,36 @@ func appendExt(fn, ext string) string {
 	return fn + ext
 }
 
-// Copies a file to the specified directory. It will also create any necessary
-// sub directories.
-//
-// TODO use native Go code to copy file to enable Windows support
-func copyTo(from, to string) error {
-	os.MkdirAll(filepath.Dir(to), 0755)
-	if err := exec.Command("cp", from, to).Run(); err != nil {
-		return err
+// copyTo copies the contents of the file named src to the file named
+// by dst. The file will be created if it does not already exist. If the
+// destination file exists, all it's contents will be replaced by the contents
+// of the source file.
+// http://stackoverflow.com/questions/21060945/simple-way-to-copy-a-file-in-golang
+func copyTo(src, dst string) (err error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return
 	}
-	return nil
+	defer in.Close()
+	dst_dir := filepath.Dir(dst)
+	if _, err := os.Stat(dst_dir); err != nil {
+		os.MkdirAll(dst_dir, 0755)
+	}
+	out, err := os.Create(dst)
+	if err != nil {
+		return
+	}
+	defer func() {
+		cerr := out.Close()
+		if err == nil {
+			err = cerr
+		}
+	}()
+	if _, err = io.Copy(out, in); err != nil {
+		return
+	}
+	err = out.Sync()
+	return
 }
 
 // Returns True if a file has YAML front-end matter.
@@ -102,6 +123,11 @@ func isPost(fn string) bool {
 		return false
 	}
 	return true
+}
+
+// Returns True if the file is a media content.
+func isMedia(fn string) bool {
+	return strings.HasPrefix(fn, "_media")
 }
 
 // Returns True if the specified file is Static Content, meaning it should

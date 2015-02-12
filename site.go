@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/md5"
 	"fmt"
+	"github.com/nfnt/resize"
+	"image/jpeg"
 	"io/ioutil"
 	"launchpad.net/goamz/aws"
 	"launchpad.net/goamz/s3"
@@ -31,6 +34,7 @@ type Site struct {
 	posts []Page             // Posts thet need to be generated
 	pages []Page             // Pages that need to be generated
 	files []string           // Static files to get copied to the destination
+	media []string           // Media files to get resized to the destination
 	templ *template.Template // Compiled templates
 }
 
@@ -64,6 +68,7 @@ func (s *Site) Reload() error {
 	s.posts = []Page{}
 	s.pages = []Page{}
 	s.files = []string{}
+	s.media = []string{}
 	s.templ = nil
 	return s.read()
 }
@@ -94,9 +99,16 @@ func (s *Site) Generate() error {
 	if err := s.writePages(); err != nil {
 		return err
 	}
+
+	if err := s.resizeMedia(); err != nil {
+		return err
+	}
+
 	if err := s.writeStatic(); err != nil {
 		return err
 	}
+
+	log.Printf("Site generation completed!\n")
 
 	return nil
 }
@@ -193,6 +205,13 @@ func (s *Site) read() error {
 
 			s.pages = append(s.pages, page)
 
+		// Make thumbnails and sane images sizes for media content
+		case isMedia(rel):
+			log.Printf("Processing media content %s...", fn)
+			if strings.HasSuffix(rel, ".jpg") {
+				s.media = append(s.media, rel)
+			}
+
 		// Move static files, no processing required
 		case isStatic(rel):
 			s.files = append(s.files, rel)
@@ -233,6 +252,41 @@ func (s *Site) read() error {
 	s.calculateCategories()
 	s.calculatePageHierachy()
 
+	return nil
+}
+
+// Make thumbnail for the selected file
+func MakeThumb(src string, dst_sane string, dst_thumb string) error {
+	file, err := os.Open(src)
+	defer file.Close()
+	if err != nil {
+		return err
+	}
+
+	img, err := jpeg.Decode(file)
+	if err != nil {
+		return err
+	}
+
+	sane := resize.Resize(1080, 0, img, resize.Bilinear)
+
+	out_sane, err := os.Create(dst_sane)
+	if err != nil {
+		return err
+	}
+	defer out_sane.Close()
+
+	jpeg.Encode(out_sane, sane, nil)
+
+	thumb := resize.Thumbnail(200, 200, img, resize.Bilinear)
+
+	out_thumb, err := os.Create(dst_thumb)
+	if err != nil {
+		return err
+	}
+	defer out_thumb.Close()
+
+	jpeg.Encode(out_thumb, thumb, nil)
 	return nil
 }
 
@@ -317,6 +371,59 @@ func (s *Site) writePages() error {
 		if err := ioutil.WriteFile(f, buf.Bytes(), 0644); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+// Helper function to resize the jpegs to sane sizes
+func (s *Site) resizeMedia() error {
+
+	os.MkdirAll(filepath.Join(s.Dest, "media"), 0755)
+
+	cache_dest := fmt.Sprintf("%x", md5.Sum([]byte(s.Dest)))
+
+	mediaCacheDir := filepath.Join(os.TempDir(), "oryza", cache_dest)
+
+	os.MkdirAll(mediaCacheDir, 0755)
+
+	for i, file := range s.media {
+		log.Printf("Automatically resizing media for you (File %d/%d: %s)...\n", i+1, len(s.media), file)
+
+		from := filepath.Join(s.Src, file)
+
+		sane_cache := filepath.Join(mediaCacheDir, strings.Replace(file, "_media/", "sane_", 1))
+		thumb_cache := filepath.Join(mediaCacheDir, strings.Replace(file, "_media/", "thumb_", 1))
+		log.Printf("Sane and thumb are cached at %s, %s\n", sane_cache, thumb_cache)
+
+		sane_exists := false
+		thumb_exists := false
+
+		if _, err := os.Stat(sane_cache); err == nil {
+			sane_exists = true
+		}
+
+		if _, err := os.Stat(thumb_cache); err == nil {
+			thumb_exists = true
+		}
+
+		sane_final := filepath.Join(s.Dest, strings.Replace(file, "_media/", "media/sane_", 1))
+		thumb_final := filepath.Join(s.Dest, strings.Replace(file, "_media/", "media/thumb_", 1))
+
+		if !sane_exists || !thumb_exists {
+			if err := MakeThumb(from, sane_cache, thumb_cache); err != nil {
+				return err
+			}
+		}
+
+		if err := copyTo(sane_cache, sane_final); err != nil {
+			return err
+		}
+
+		if err := copyTo(thumb_cache, thumb_final); err != nil {
+			return err
+		}
+
 	}
 
 	return nil
