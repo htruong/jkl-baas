@@ -392,9 +392,11 @@ func (s *Site) resizeMedia() error {
 
 		from := filepath.Join(s.Src, file)
 
-		sane_cache := filepath.Join(mediaCacheDir, strings.Replace(file, "_media/", "sane_", 1))
-		thumb_cache := filepath.Join(mediaCacheDir, strings.Replace(file, "_media/", "thumb_", 1))
-		log.Printf("Sane and thumb are cached at %s, %s\n", sane_cache, thumb_cache)
+		fnbase := filepath.Base(from)
+
+		sane_cache := filepath.Join(mediaCacheDir, "sane_"+fnbase)
+		thumb_cache := filepath.Join(mediaCacheDir, "thumb_"+fnbase)
+		//log.Printf("Sane and thumb are cached at %s, %s\n", sane_cache, thumb_cache)
 
 		sane_exists := false
 		thumb_exists := false
@@ -407,8 +409,8 @@ func (s *Site) resizeMedia() error {
 			thumb_exists = true
 		}
 
-		sane_final := filepath.Join(s.Dest, strings.Replace(file, "_media/", "media/sane_", 1))
-		thumb_final := filepath.Join(s.Dest, strings.Replace(file, "_media/", "media/thumb_", 1))
+		sane_final := filepath.Join(s.Dest, "sane_"+fnbase)
+		thumb_final := filepath.Join(s.Dest, "thumb_"+fnbase)
 
 		if !sane_exists || !thumb_exists {
 			if err := MakeThumb(from, sane_cache, thumb_cache); err != nil {
